@@ -1,86 +1,86 @@
-# Hafif Mineflayer AFK Client
+# AFK Control
 
-Windows 11 üzerinde Minecraft Java Edition grafik istemcisi açmadan, terminalden en fazla beş offline-mode botu yönetir. Botlar hareket etmez ve gereksiz paket göndermez; yalnızca Mineflayer bağlantısının gerektirdiği protokol trafiği kullanılır.
+Mineflayer AFK client with local mode and a multi-user Firebase + Google authentication mode.
 
-## Mimari
+## Architecture
 
-- `src/config.js`: `.env` değerlerini doğrular; sunucu, sürüm, bot adları, giriş ve yeniden bağlanma ayarlarını yükler.
-- `src/bot-manager.js`: Her bot için durum makinesi, bağlantı sonrası giriş/oyun komutları, kontrollü üstel geri çekilmeli yeniden bağlanma ve toplu/tekil başlatma-durdurma işlemlerini yönetir.
-- `src/terminal-ui.js`: Yerleşik `readline` ile hafif terminal panelini ve komutları sağlar.
-- `src/web-ui.js`: Yerel tarayıcı arayüzünü, bot kartlarını ve kontrol API'sini sağlar.
-- `src/gui.js`: Arayüz sunucusunu başlatır ve tarayıcıyı otomatik açar.
-- `src/index.js`: Uygulamayı başlatır ve kapanış sinyallerini güvenli biçimde işler.
+- `src/bot-manager.js`: Mineflayer lifecycle, status, reconnect and chat.
+- `src/worker.js`: Starts local bots or watches per-user Firestore bot documents.
+- `src/firestore-store.js`: Firebase Admin initialization and Firestore collection-group watcher.
+- `src/worker-api.js`: Protected internal API for the Railway worker.
+- `api/[...path].js`: Verifies Google/Firebase ID tokens, manages a user's Firestore configs and proxies the worker.
+- `index.html`: Google sign-in panel, per-user config editor, status, logs and chat.
 
-Varsayılan Minecraft sürümü `1.20.1`'dir. Sunucunuz 1.18.2 kullanıyorsa yalnızca `MC_VERSION=1.18.2` yapın. Offline sunucularda `auth=offline` kullanılır. Bot adı sunucuya bağlanır; parola gerekiyorsa `/login` komutu, ardından varsayılan olarak `/boxmining` ve `/warp afk` komutları otomatik gönderilir. Parolalar yalnızca yerel `.env` dosyasından okunur ve panele/loglara yazılmaz.
+Passwords are stored in Firestore and are never returned by the panel API or logged.
 
-## Windows 11 kurulumu
-
-1. Node.js 18.17 veya daha yeni bir LTS sürümünü [nodejs.org](https://nodejs.org/) üzerinden kurun.
-2. PowerShell açın ve proje klasörüne gidin:
-
-   ```powershell
-   cd "C:\Users\zaina\Desktop\AFK Client For AloneTulip77852"
-   ```
-
-3. Örnek ayar dosyasını kopyalayın:
-
-   ```powershell
-   Copy-Item .env.example .env
-   ```
-
-4. `.env` dosyasını düzenleyin. `MC_HOST`, `MC_PORT`, `MC_VERSION` ve benzersiz `BOT_NAMES` değerlerini sunucunuza göre ayarlayın. Beşten az bot kullanacaksanız `BOT_NAMES` içinde yalnızca istediğiniz adları bırakın.
-5. Her botun sunucudaki hesabına ait parolayı aynı sıradaki değişkene yazın:
-
-   ```dotenv
-   BOT_NAMES=ZainAFK1,ZainAFK2
-   BOT_1_PASSWORD=ilkBotParolasi
-   BOT_2_PASSWORD=ikinciBotParolasi
-   LOGIN_COMMAND=/login
-   LOGIN_DELAY_MS=1500
-   AFTER_LOGIN_COMMANDS=/boxmining,/warp afk
-   COMMAND_DELAY_MS=2000
-   ```
-
-   `AFTER_LOGIN_COMMANDS` komutları virgülle ayrılmış sırayla gönderir. Komutlar arasındaki bekleme `COMMAND_DELAY_MS` değeridir. Sunucunuz `/login <parola>` yerine farklı bir komut kullanıyorsa `LOGIN_COMMAND` değerini değiştirin. Parolaları paylaşmayın ve `.env` dosyasını GitHub'a yüklemeyin. Hesaplar ilk kez kayıt istiyorsa, sunucunun kuralına göre önce `/register <parola> <parola>` işlemini manuel yapın; bu istemci otomatik kayıt komutu göndermez.
-6. Bağımlılıkları kurun:
-
-   ```powershell
-   npm install
-   ```
-
-7. İstemciyi çalıştırın:
-
-   ```powershell
-   npm start
-   ```
-
-Tarayıcı arayüzünü açmak için:
+## Local mode
 
 ```powershell
-npm run gui
+Copy-Item .env.example .env
+npm install
+npm start
 ```
 
-Alternatif olarak proje kökündeki `AFK-GUI.js` dosyasını şu komutla çalıştırabilirsiniz:
+Set `BOT_NAMES` and optional `BOT_1_PASSWORD` values in `.env`. Do not set Firebase variables for local mode. Local mode does not require Google sign-in.
 
-```powershell
-node AFK-GUI.js
+## Firebase setup
+
+1. Create a Firebase project and enable **Authentication > Sign-in method > Google**.
+2. Add the Vercel domain to **Authentication > Settings > Authorized domains**.
+3. Create a Firestore database.
+4. In **Project settings > Service accounts**, generate a service-account key.
+5. In **Project settings > General**, copy the Web app configuration.
+6. Create Firestore Security Rules so clients cannot directly access user data:
+
+```text
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{uid}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+  }
+}
 ```
 
-Bu komut `http://127.0.0.1:3210` adresinde hafif bir kontrol paneli açar. Arayüzden tüm botları veya botları tek tek başlatıp durdurabilirsiniz; terminal sürümü `npm start` ile çalışmaya devam eder.
+The browser does not need Firestore access because all config operations go through the authenticated Vercel API. Public Firestore rules are not required.
 
-Bot kartındaki `Envanter` düğmesi, bağlı botun oyuncu envanterini 9x4 slot düzeninde salt okunur gösterir. Bot bağlı değilse slotlar boş görünür.
+## Railway worker
 
-Sunucuda bot adlarının kabul edildiğinden ve bot kullanımının sunucu kurallarına uygun olduğundan emin olun.
+Set these variables in Railway:
 
-## Terminal komutları
+- `FIREBASE_SERVICE_ACCOUNT_JSON`: the complete downloaded JSON as one environment value.
+- `WORKER_API_TOKEN`: a long random secret.
+- `WEB_HOST=0.0.0.0`
+- `NODE_ENV=production`
+- `PORT`: leave for Railway to assign automatically.
 
-| Komut | İşlem |
-| --- | --- |
-| `b1` ... `b5` | İlgili botu başlatır |
-| `d1` ... `d5` | İlgili botu durdurur |
-| `ba` | Tüm botları başlatır |
-| `da` | Tüm botları durdurur |
-| `h` | Yardım gösterir |
-| `q` | Tüm botları kapatıp çıkar |
+Start command:
 
-Panel her botun durumunu, bağlantıdan beri geçen süreyi, son hata mesajını ve toplam aktif bot sayısını gösterir. Bağlantı koparsa gecikme 5 saniyeden başlayıp en fazla 60 saniyeye kadar çıkar; bot `d1` gibi bir komutla durdurulmuşsa yeniden bağlanmaz.
+```text
+npm run start:worker
+```
+
+The worker watches `users/{uid}/bots` with Firebase Admin. It creates/recreates a Mineflayer manager for every configured user and starts bots configured with `autoStart: true`. Restarting Railway automatically reloads and restarts them. `BOT_NAMES` and `BOT_*_PASSWORD` are not required in Railway variables.
+
+Create a Railway public domain and verify `/health`.
+
+## Vercel deployment
+
+Set these environment variables:
+
+- `FIREBASE_SERVICE_ACCOUNT_JSON`: the same complete service-account JSON.
+- `FIREBASE_WEB_CONFIG_JSON`: compact JSON containing `apiKey`, `authDomain`, `projectId`, and `appId`.
+- `WORKER_URL`: the Railway public URL, for example `https://example.up.railway.app`.
+- `WORKER_API_TOKEN`: exactly the Railway worker token.
+
+Deploy this repository on Vercel. Firebase Admin verifies Google ID tokens in `api/[...path].js`; Vercel stores and updates only the signed-in user's documents.
+
+After deployment, open the site, sign in with Google, enter the Minecraft host, bot name and password, then save. The worker receives the update through Firestore and starts/reconnects the bot.
+
+## Security
+
+- Never commit `.env` or service-account JSON.
+- Keep `WORKER_API_TOKEN` and service-account credentials only in Railway/Vercel variables.
+- Use HTTPS domains and keep the worker token secret.
+- Ensure all bot use complies with the Minecraft server rules.

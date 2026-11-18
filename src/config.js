@@ -16,14 +16,23 @@ function readPositiveInteger(name, fallback) {
   return value;
 }
 
-function readBotNames() {
+function readBoolean(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  if (raw === 'true' || raw === '1') return true;
+  if (raw === 'false' || raw === '0') return false;
+  throw new Error(`${name} true veya false olmalıdır.`);
+}
+
+function readBotNames(optional = false) {
   const rawNames = (process.env.BOT_NAMES || '')
     .split(',')
     .map((name) => name.trim())
     .filter(Boolean);
 
+  if (rawNames.length === 0 && optional) return [];
   if (rawNames.length === 0) {
-    throw new Error('BOT_NAMES en az bir kullanıcı adı içermelidir.');
+    return [];
   }
   if (rawNames.length > MAX_ALLOWED_BOTS) {
     throw new Error(`En fazla ${MAX_ALLOWED_BOTS} bot desteklenir.`);
@@ -56,7 +65,8 @@ function loadConfig() {
     throw new Error(`MAX_BOTS en fazla ${MAX_ALLOWED_BOTS} olabilir.`);
   }
 
-  const botNames = readBotNames();
+  const firebaseMode = Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_JSON || process.env.GOOGLE_APPLICATION_CREDENTIALS);
+  const botNames = readBotNames(firebaseMode);
   if (botNames.length > maxBots) {
     throw new Error('BOT_NAMES sayısı MAX_BOTS değerinden fazla olamaz.');
   }
@@ -76,7 +86,11 @@ function loadConfig() {
     afterLoginCommands: readAfterLoginCommands(),
     commandDelayMs: readPositiveInteger('COMMAND_DELAY_MS', 2000),
     reconnectBaseDelayMs: readPositiveInteger('RECONNECT_BASE_DELAY_MS', 5000),
-    reconnectMaxDelayMs: readPositiveInteger('RECONNECT_MAX_DELAY_MS', 60000)
+    reconnectMaxDelayMs: readPositiveInteger('RECONNECT_MAX_DELAY_MS', 60000),
+    autoStart: readBoolean('AUTO_START', true),
+    webHost: process.env.WEB_HOST || '127.0.0.1',
+    webPort: readPositiveInteger('PORT', readPositiveInteger('WEB_PORT', 3210)),
+    workerApiToken: process.env.WORKER_API_TOKEN || ''
   };
 }
 

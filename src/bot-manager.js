@@ -107,6 +107,10 @@ class ManagedBot extends EventEmitter {
       this.emit('error', { bot: this.snapshot(), error });
     });
 
+    this.connection.on('messagestr', (message) => {
+      this.emit('chat', message);
+    });
+
     this.connection.on('end', (reason) => {
       this.connectedAt = null;
       if (this.loginTimer) {
@@ -170,11 +174,23 @@ class ManagedBot extends EventEmitter {
 class BotManager extends EventEmitter {
   constructor(config) {
     super();
+    this.logs = [];
+    this.maxLogs = 250;
     this.bots = config.botNames.map((name, index) => {
       const bot = new ManagedBot(name, null, index + 1);
-      bot.connectionOptions = config;
-      bot.on('change', () => this.emit('change'));
-      bot.on('error', (event) => this.emit('botError', event));
+      bot.connectionOptions = {
+        ...config,
+        ...(Array.isArray(config.botConfigs) ? config.botConfigs[index] : {})
+      };
+      bot.on('change', (snapshot) => {
+        this.addLog(snapshot.index, 'status', snapshot.status);
+        this.emit('change');
+      });
+      bot.on('error', (event) => {
+        this.addLog(bot.index, 'error', event.error.message || String(event.error));
+        this.emit('botError', event);
+      });
+      bot.on('chat', (message) => this.addLog(bot.index, 'chat', message));
       return bot;
     });
   }
@@ -203,6 +219,32 @@ class BotManager extends EventEmitter {
 
   stopAll() {
     this.bots.forEach((bot) => bot.stop());
+  }
+
+  addLog(botIndex, type, message) {
+    const bot = this.bots[botIndex - 1];
+    this.logs.push({
+      timestamp: Date.now(),
+      botIndex,
+      botName: bot ? bot.name : `Bot ${botIndex}`,
+      type,
+      message: String(message).slice(0, 500)
+    });
+    if (this.logs.length > this.maxLogs) this.logs.splice(0, this.logs.length - this.maxLogs);
+    this.emit('log');
+  }
+
+  getLogs(limit = 100) {
+    const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), this.maxLogs);
+    return this.logs.slice(-safeLimit);
+  }
+
+  sendChat(index, message) {
+    const bot = this.bots[index];
+    if (!bot || bot.status !== STATUS.ONLINE) return false;
+    bot.connection.chat(message);
+    this.addLog(bot.index, 'outgoing', message);
+    return true;
   }
 
   inventory(index) {

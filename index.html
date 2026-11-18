@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AFK Control</title>
+  <style>
+    :root{color-scheme:dark;font-family:system-ui,sans-serif;background:#10141b;color:#e8edf2}
+    body{max-width:1050px;margin:auto;padding:24px}button,input,select{border:1px solid #536273;border-radius:6px;padding:9px;background:#1b2530;color:inherit}button{cursor:pointer}.hidden{display:none!important}.toolbar{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}.card,.panel{border:1px solid #334252;border-radius:8px;padding:14px;background:#161e27}.card label,.panel label{display:block;margin:8px 0}.card input,.panel input{width:100%;box-sizing:border-box;margin-top:4px}.muted{color:#9aa8b5}.online{color:#63d391}.starting,.reconnecting{color:#f0c75e}.stopped{color:#e38181}#logs{height:300px;overflow:auto;background:#0b1016;border:1px solid #334252;padding:10px}.log{border-bottom:1px solid #1c2732;padding:4px;font:13px monospace}.error{color:#f08a8a}.chat{display:flex;gap:6px}.chat input{flex:1}
+  </style>
+</head>
+<body>
+  <section id="login" class="panel">
+    <h1>AFK Control</h1>
+    <p class="muted">Minecraft botlarını Google hesabınızla yönetin.</p>
+    <button id="google-login">Google ile giriş yap</button>
+  </section>
+  <main id="app" class="hidden">
+    <header><h1>AFK Control</h1><p id="summary" class="muted"></p><button id="logout">Çıkış</button></header>
+    <section class="panel">
+      <h2>Bot ekle / düzenle</h2>
+      <form id="config-form">
+        <input type="hidden" id="bot-id">
+        <div class="grid">
+          <label>Bot adı<input id="botName" required maxlength="64"></label>
+          <label>Sunucu<input id="host" required maxlength="253"></label>
+          <label>Port<input id="port" type="number" value="25565" min="1" max="65535"></label>
+          <label>Surum<input id="version" value="1.20.1"></label>
+          <label>Şifre<input id="password" type="password" maxlength="256" autocomplete="off"></label>
+          <label>Giriş komutu<input id="loginCommand" value="/login"></label>
+          <label>Giriş gecikmesi (ms)<input id="loginDelayMs" type="number" value="1500" min="0"></label>
+          <label>Komut gecikmesi (ms)<input id="commandDelayMs" type="number" value="2000" min="0"></label>
+          <label>Sonraki komutlar (virgülle)<input id="afterLoginCommands" value="/boxmining,/warp afk"></label>
+        </div>
+        <div class="toolbar"><button type="submit">Kaydet</button><button type="button" id="reset">Temizle</button></div>
+      </form>
+    </section>
+    <h2>Botlar</h2><div class="grid" id="configs"></div>
+    <div class="toolbar"><button data-action="/api/all/start">Tümünü başlat</button><button data-action="/api/all/stop">Tümünü durdur</button></div>
+    <div class="grid" id="bots"></div>
+    <h2>Log ve chat</h2><div id="logs"></div><p id="message"></p>
+  </main>
+  <script type="module">
+    import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.2.0/firebase-app.js';
+    import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/11.2.0/firebase-auth.js';
+    const $ = (s) => document.querySelector(s);
+    const escapeHtml = (v) => String(v).replace(/[&<>"']/g,(c)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'})[c]);
+    const configResponse = await fetch('/api/firebase-config');
+    if (!configResponse.ok) throw new Error((await configResponse.json()).error);
+    const app = initializeApp(await configResponse.json());
+    const auth = getAuth(app);
+    let currentUser = null;
+
+    async function api(path, options = {}) {
+      if (!currentUser) throw new Error('Oturum gerekli.');
+      const token = await currentUser.getIdToken();
+      const response = await fetch(path,{...options,headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json',...(options.headers||{})}});
+      const data = await response.json().catch(()=>({}));
+      if (!response.ok) throw new Error(data.error || 'İstek başarısız.');
+      return data;
+    }
+    function showError(error){ $('#message').textContent=error.message; }
+    async function refreshConfigs(){
+      const {bots}=await api('/api/config');
+      $('#configs').innerHTML=bots.map((bot)=>`<article class="card"><h3>${escapeHtml(bot.botName)}</h3><p class="muted">${escapeHtml(bot.host)}:${bot.port} · MC ${escapeHtml(bot.version)}</p><button data-edit='${encodeURIComponent(JSON.stringify(bot))}'>Düzenle</button> <button data-delete="${escapeHtml(bot.id)}">Sil</button></article>`).join('');
+    }
+    async function refresh(){
+      try{
+        const state=await api('/api/state');
+        $('#summary').textContent=`${state.activeCount}/${state.bots.length} bot bağlı`;
+        $('#bots').innerHTML=state.bots.map((bot)=>`<article class="card"><h3>${escapeHtml(bot.name)}</h3><strong class="${escapeHtml(bot.status.toLowerCase())}">${escapeHtml(bot.status)}</strong><p class="muted">${escapeHtml(bot.lastError||'Hata yok')}</p><button data-action="/api/bots/${bot.index}/start">Başlat</button> <button data-action="/api/bots/${bot.index}/stop">Durdur</button><form class="chat" data-chat="${bot.index}"><input name="message" maxlength="256" placeholder="Chat mesajı"><button>Gönder</button></form></article>`).join('');
+        const logs=(await api('/api/logs?limit=150')).logs;
+        $('#logs').innerHTML=logs.slice().reverse().map((log)=>`<div class="log ${log.type==='error'?'error':''}">${escapeHtml(new Date(log.timestamp).toLocaleTimeString())} <b>${escapeHtml(log.botName)}</b>: ${escapeHtml(log.message)}</div>`).join('');
+      }catch(error){showError(error)}
+    }
+    $('#google-login').addEventListener('click',()=>signInWithPopup(auth,new GoogleAuthProvider()).catch(showError));
+    $('#logout').addEventListener('click',()=>signOut(auth));
+    onAuthStateChanged(auth,(user)=>{
+      currentUser=user; $('#login').classList.toggle('hidden',!!user); $('#app').classList.toggle('hidden',!user);
+      if(user){refreshConfigs();refresh()}
+    });
+    $('#reset').addEventListener('click',()=>{
+      $('#config-form').reset(); $('#bot-id').value='';
+    });
+    $('#config-form').addEventListener('submit',async(event)=>{
+      event.preventEvent?.();
+      event.preventDefault();
+      try{
+        const body={id:$('#bot-id').value||undefined,botName:$('#botName').value.trim(),host:$('#host').value.trim(),port:Number($('#port').value),version:$('#version').value.trim(),password:$('#password').value,loginCommand:$('#loginCommand').value.trim(),loginDelayMs:Number($('#loginDelayMs').value),commandDelayMs:Number($('#commandDelayMs').value),afterLoginCommands:$('#afterLoginCommands').value.split(',').map(v=>v.trim()).filter(Boolean),autoStart:true};
+        await api('/api/config',{method:'POST',body:JSON.stringify(body)});
+        $('#password').value=''; await refreshConfigs(); await refresh();
+      }catch(error){showError(error)}
+    });
+    document.addEventListener('click',async(event)=>{
+      const edit=event.target.closest('[data-edit]');
+      if(edit){const bot=JSON.parse(decodeURIComponent(edit.dataset.edit)); $('#bot-id').value=bot.id; for(const key of ['botName','host','port','version','loginCommand','loginDelayMs','commandDelayMs','afterLoginCommands']){const el=$('#'+key);if(el)el.value=key==='afterLoginCommands'?(bot[key]||[]).join(','):bot[key]??el.value} return}
+      const del=event.target.closest('[data-delete]');
+      if(del){try{await api('/api/config/'+encodeURIComponent(del.dataset.delete),{method:'DELETE'});await refreshConfigs();await refresh()}catch(error){showError(error)}return}
+      const button=event.target.closest('[data-action]');
+      if(button){try{await api(button.dataset.action,{method:'POST'});await refresh()}catch(error){showError(error)}}
+    });
+    document.addEventListener('submit',async(event)=>{
+      if(!event.target.matches('[data-chat]'))return; event.preventDefault();
+      const input=event.target.elements.message;
+      try{await api('/api/bots/'+event.target.dataset.chat+'/chat',{method:'POST',body:JSON.stringify({message:input.value})});input.value='';await refresh()}catch(error){showError(error)}
+    });
+    setInterval(()=>{if(currentUser){refresh();}},2500);
+  </script>
+</body>
+</html>
